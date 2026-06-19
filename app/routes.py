@@ -4,7 +4,7 @@ from threading import Thread, Lock
 
 from flask import Blueprint, current_app, jsonify, render_template, request
 
-from .controller import MockMatterController
+from .controller import MockMatterController, map_raw_attributes
 from .matter import MatterHubService
 from .pairing_jobs import append_job_log, complete_job, create_job, fail_job, get_job, job_to_dict, update_job
 import time
@@ -52,9 +52,10 @@ def _run_background_sync(app_instance):
                                         repo.update_device_state(device.id, state_patch)
                                         # Automatyzacje
                                         check_and_run_automations(device.id, state_patch)
-                        except Exception:
+                        except Exception as inner_e:
+                            print(f"Error syncing device {device.id}: {inner_e}")
                             continue
-                time.sleep(1.0)
+                time.sleep(4.0)
             except Exception as e:
                 print(f"Sync thread crashed: {e}")
                 time.sleep(10)
@@ -101,6 +102,31 @@ def index():
 @api.get("/swagger")
 def swagger_ui():
     return render_template("swagger.html")
+
+
+
+@api.get("/api/debug/matter")
+def debug_matter():
+    controller = current_app.extensions["matter_controller"]
+    if not hasattr(controller, "_client") or not controller._client:
+        return jsonify({"error": "No client available"})
+    
+    from .controller import _jsonable
+    nodes = controller._client.get_nodes()
+    nodes_info = []
+    for node in nodes:
+        nodes_info.append({
+            "node_id": node.node_id,
+            "available": node.available,
+            "attributes_count": len(getattr(node.node_data, "attributes", {})),
+            "attributes": _jsonable(node.node_data.attributes)
+        })
+        
+    return jsonify({
+        "connected": controller._client.connection.connected if hasattr(controller._client, "connection") else False,
+        "nodes_count": len(nodes),
+        "nodes": nodes_info
+    })
 
 
 @api.get("/api/health")
@@ -220,7 +246,59 @@ def check_and_run_automations(device_id: str, state_patch: dict[str, Any]):
             if aut.trigger_attribute in state_patch:
                 new_value = state_patch[aut.trigger_attribute]
                 
-                if new_value == aut.trigger_value:
+                # Dynamic validation based on trigger_operator
+                op = getattr(aut, "trigger_operator", "==")
+                matched = False
+                
+                # Attempt to normalize trigger_value and new_value to same type (e.g. bool, float)
+                normalized_trigger_val = aut.trigger_value
+                normalized_new_val = new_value
+                
+                # Check for booleans
+                if isinstance(new_value, bool) or str(new_value).lower() in ("true", "false"):
+                    b_new = bool(new_value) if isinstance(new_value, bool) else (str(new_value).lower() == "true")
+                    b_trig = normalized_trigger_val
+                    if str(normalized_trigger_val).lower() in ("true", "on", "yes", "1"):
+                        b_trig = True
+                    elif str(normalized_trigger_val).lower() in ("false", "off", "no", "0"):
+                        b_trig = False
+                    normalized_new_val = b_new
+                    normalized_trigger_val = b_trig
+                # Check for numbers
+                else:
+                    try:
+                        normalized_new_val = float(new_value)
+                        normalized_trigger_val = float(aut.trigger_value)
+                    except (ValueError, TypeError):
+                        normalized_new_val = str(new_value).strip().lower()
+                        normalized_trigger_val = str(aut.trigger_value).strip().lower()
+
+                if op == "==":
+                    matched = (normalized_new_val == normalized_trigger_val)
+                elif op == "!=":
+                    matched = (normalized_new_val != normalized_trigger_val)
+                elif op == ">":
+                    try:
+                        matched = (normalized_new_val > normalized_trigger_val)
+                    except TypeError:
+                        pass
+                elif op == "<":
+                    try:
+                        matched = (normalized_new_val < normalized_trigger_val)
+                    except TypeError:
+                        pass
+                elif op == ">=":
+                    try:
+                        matched = (normalized_new_val >= normalized_trigger_val)
+                    except TypeError:
+                        pass
+                elif op == "<=":
+                    try:
+                        matched = (normalized_new_val <= normalized_trigger_val)
+                    except TypeError:
+                        pass
+
+                if matched:
                     action_device = repo.get_device(aut.action_device_id)
                     if not action_device:
                         continue
@@ -228,6 +306,7 @@ def check_and_run_automations(device_id: str, state_patch: dict[str, Any]):
                     service = _service()
                     allowed_actions = service.allowed_actions(action_device.device_type)
                     if aut.action_command in allowed_actions:
+                        # Real invoke_command triggers physical action on device!
                         action_state_patch = service.invoke_command(
                             action_device.device_type,
                             aut.action_command,
@@ -235,6 +314,7 @@ def check_and_run_automations(device_id: str, state_patch: dict[str, Any]):
                             context=action_device.metadata,
                         )
                         repo.update_device_state(aut.action_device_id, action_state_patch)
+                        # Avoid infinite loops, but allow chain execution
                         check_and_run_automations(aut.action_device_id, action_state_patch)
     except Exception as e:
         current_app.logger.error(f"Error running automations: {e}")
@@ -455,6 +535,7 @@ def create_automation():
     trigger_device_id = payload.get("trigger_device_id")
     trigger_attribute = payload.get("trigger_attribute")
     trigger_value = payload.get("trigger_value")
+    trigger_operator = payload.get("trigger_operator", "==")
     action_device_id = payload.get("action_device_id")
     action_command = payload.get("action_command")
     action_payload = payload.get("action_payload") or {}
@@ -467,6 +548,7 @@ def create_automation():
         trigger_device_id=trigger_device_id,
         trigger_attribute=trigger_attribute,
         trigger_value=trigger_value,
+        trigger_operator=trigger_operator,
         action_device_id=action_device_id,
         action_command=action_command,
         action_payload=action_payload,

@@ -19,7 +19,7 @@ def create_app() -> Flask:
     repository = DeviceRepository(app.config["DATABASE_PATH"])
     repository.initialize()
     app.extensions["device_repository"] = repository
-    controller, controller_error = load_controller_with_status()
+    controller, controller_error = load_controller_with_status(repository, app)
     app.extensions["matter_controller"] = controller
     app.extensions["matter_controller_error"] = controller_error
 

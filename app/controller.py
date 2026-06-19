@@ -5,6 +5,7 @@ import json
 import importlib
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -12,6 +13,10 @@ from typing import Any, Protocol
 
 
 from .pairing_jobs import append_job_log, update_job
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -616,88 +621,96 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
+def map_single_attribute(attribute_path: str, val: Any) -> dict[str, Any]:
+    parts = str(attribute_path).split("/")
+    if len(parts) != 3:
+        return {}
+    try:
+        ep = int(parts[0])
+        cl = int(parts[1])
+        attr = int(parts[2])
+    except ValueError:
+        return {}
+    
+    # Endpoint 0 is root/Basic Information. Skip to keep device state clean.
+    if ep == 0:
+        return {}
+        
+    mapped = {}
+    # OnOff Cluster (6)
+    if cl == 6:
+        if attr == 0:
+            mapped["on"] = bool(val)
+            
+    # LevelControl Cluster (8)
+    elif cl == 8:
+        if attr == 0:
+            if val is not None:
+                mapped["brightness"] = round(int(val) * 100 / 254)
+                
+    # DoorLock Cluster (257)
+    elif cl == 257:
+        if attr == 0:
+            mapped["locked"] = (int(val) == 1) if val is not None else True
+            
+    # WindowCovering Cluster (258)
+    elif cl == 258:
+        if attr in (8, 23):
+            if val is not None:
+                mapped["position"] = int(val)
+                mapped["open"] = int(val) > 0
+                
+    # Thermostat Cluster (513)
+    elif cl == 513:
+        if attr == 0:
+            if val is not None:
+                mapped["temperature"] = round(int(val) / 100.0, 1)
+        elif attr in (18, 19):
+            if val is not None:
+                mapped["target_temperature"] = round(int(val) / 100.0, 1)
+                
+    # Temperature Measurement (1026)
+    elif cl == 1026:
+        if attr == 0:
+            if val is not None:
+                mapped["temperature"] = round(int(val) / 100.0, 1)
+                
+    # Relative Humidity Measurement (1029)
+    elif cl == 1029:
+        if attr == 0:
+            if val is not None:
+                mapped["humidity"] = round(int(val) / 100.0, 1)
+                
+    # Occupancy Sensing (1030)
+    elif cl == 1030:
+        if attr == 0:
+            if val is not None:
+                mapped["occupancy"] = bool(int(val) & 1)
+                
+    # Boolean State (69)
+    elif cl == 69:
+        if attr == 0:
+            mapped["open"] = bool(val)
+            
+    # Smoke CO Alarm (92)
+    elif cl == 92:
+        if attr == 0:
+            mapped["alarm"] = bool(val)
+            
+    return mapped
+
+
 def map_raw_attributes(raw_attrs: dict[str, Any]) -> dict[str, Any]:
     mapped = {}
     for key, val in raw_attrs.items():
-        parts = str(key).split("/")
-        if len(parts) != 3:
-            continue
-        try:
-            ep = int(parts[0])
-            cl = int(parts[1])
-            attr = int(parts[2])
-        except ValueError:
-            continue
-        
-        # Endpoint 0 is root/Basic Information. Skip to keep device state clean.
-        if ep == 0:
-            continue
-            
-        # OnOff Cluster (6)
-        if cl == 6:
-            if attr == 0:
-                mapped["on"] = bool(val)
-                
-        # LevelControl Cluster (8)
-        elif cl == 8:
-            if attr == 0:
-                if val is not None:
-                    mapped["brightness"] = round(int(val) * 100 / 254)
-                    
-        # DoorLock Cluster (257)
-        elif cl == 257:
-            if attr == 0:
-                mapped["locked"] = (int(val) == 1) if val is not None else True
-                
-        # WindowCovering Cluster (258)
-        elif cl == 258:
-            if attr in (8, 23):
-                if val is not None:
-                    mapped["position"] = int(val)
-                    mapped["open"] = int(val) > 0
-                    
-        # Thermostat Cluster (513)
-        elif cl == 513:
-            if attr == 0:
-                if val is not None:
-                    mapped["temperature"] = round(int(val) / 100.0, 1)
-            elif attr in (18, 19):
-                if val is not None:
-                    mapped["target_temperature"] = round(int(val) / 100.0, 1)
-                    
-        # Temperature Measurement (1026)
-        elif cl == 1026:
-            if attr == 0:
-                if val is not None:
-                    mapped["temperature"] = round(int(val) / 100.0, 1)
-                    
-        # Relative Humidity Measurement (1029)
-        elif cl == 1029:
-            if attr == 0:
-                if val is not None:
-                    mapped["humidity"] = round(int(val) / 100.0, 1)
-                    
-        # Occupancy Sensing (1030)
-        elif cl == 1030:
-            if attr == 0:
-                if val is not None:
-                    mapped["occupancy"] = bool(int(val) & 1)
-                    
-        # Boolean State (69)
-        elif cl == 69:
-            if attr == 0:
-                mapped["open"] = bool(val)
-                
-        # Smoke CO Alarm (92)
-        elif cl == 92:
-            if attr == 0:
-                mapped["alarm"] = bool(val)
-                
+        mapped.update(map_single_attribute(key, val))
     return mapped
 
 class MatterServerControllerAdapter:
-    def __init__(self, ws_url: str) -> None:
+    def __init__(self, ws_url: str, repository: Any | None = None, app: Any | None = None) -> None:
         self._ws_url = ws_url
+        self._repository = repository
+        self._app = app
         import threading
         
         self._loop = asyncio.new_event_loop()
@@ -717,6 +730,7 @@ class MatterServerControllerAdapter:
         asyncio.set_event_loop(self._loop)
         while True: # Pętla podtrzymująca życie wątku
             try:
+                self._ready_event.clear()
                 self._loop.run_until_complete(self._connect_and_listen())
             except Exception as e:
                 print(f"Krytyczny błąd połączenia Matter: {e}. Restart za 5s...")
@@ -725,9 +739,24 @@ class MatterServerControllerAdapter:
     async def _connect_and_listen(self):
         from aiohttp import ClientSession
         from matter_server.client.client import MatterClient
+        from matter_server.common.models import EventType
         
         self._session = ClientSession()
         self._client = MatterClient(self._ws_url, self._session)
+        
+        # Intercept attributes / nodes events in real-time
+        orig_signal_event = self._client._signal_event
+        def custom_signal_event(event: EventType, data: Any = None, node_id: int | None = None, attribute_path: str | None = None):
+            orig_signal_event(event, data, node_id, attribute_path)
+            # Log all received events to stderr/stdout for debug
+            print(f"[Real-time Event] event={event.name} node_id={node_id} path={attribute_path} data={data}", flush=True)
+            if event == EventType.ATTRIBUTE_UPDATED and node_id is not None:
+                self._handle_realtime_attribute_update(node_id, attribute_path, data)
+            elif event == EventType.NODE_UPDATED and node_id is not None:
+                self._handle_realtime_node_update(node_id, data)
+                
+        self._client._signal_event = custom_signal_event
+        
         init_ready = asyncio.Event()
         
         # start_listening rzuca wyjątek, jeśli połączenie nie może zostać nawiązane
@@ -739,8 +768,88 @@ class MatterServerControllerAdapter:
             await listen_task
         finally:
             # Sprzątanie przy błędzie
+            self._ready_event.clear()
             listen_task.cancel()
-            await self._session.close()
+            try:
+                await listen_task
+            except Exception:
+                pass
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+
+    def _handle_realtime_attribute_update(self, node_id: int, attribute_path: str, new_value: Any):
+        if not self._repository:
+            return
+        try:
+            device = self._repository.get_device_by_node_id(str(node_id))
+            if not device:
+                return
+
+            state_patch = map_single_attribute(attribute_path, new_value)
+            if not state_patch:
+                return
+
+            different = False
+            for k, v in state_patch.items():
+                if device.attributes.get(k) != v:
+                    different = True
+                    break
+
+            if different:
+                self._repository.update_device_state(device.id, state_patch)
+                print(f"[Real-time] Node {node_id} state updated: {state_patch}", flush=True)
+                
+                if self._app:
+                    from .routes import check_and_run_automations
+                    with self._app.app_context():
+                        try:
+                            check_and_run_automations(device.id, state_patch)
+                        except Exception as e:
+                            self._app.logger.error(f"Error running real-time automations for device {device.id}: {e}")
+            else:
+                print(f"[Real-time] Node {node_id} state (humidity) is same: {state_patch}", flush=True)
+        except Exception as e:
+            if self._app:
+                self._app.logger.error(f"Error handling real-time attribute update: {e}")
+            else:
+                print(f"Error handling real-time attribute update: {e}", flush=True)
+
+    def _handle_realtime_node_update(self, node_id: int, node: Any):
+        if not self._repository:
+            return
+        try:
+            device = self._repository.get_device_by_node_id(str(node_id))
+            if not device:
+                return
+
+            state_patch = self._attributes_from_node(node)
+            if not state_patch:
+                return
+
+            different = False
+            for k, v in state_patch.items():
+                if device.attributes.get(k) != v:
+                    different = True
+                    break
+
+            if different:
+                self._repository.update_device_state(device.id, state_patch)
+                print(f"[Real-time Node] Node {node_id} state updated: {state_patch}", flush=True)
+                
+                if self._app:
+                    from .routes import check_and_run_automations
+                    with self._app.app_context():
+                        try:
+                            check_and_run_automations(device.id, state_patch)
+                        except Exception as e:
+                            self._app.logger.error(f"Error running real-time node automations for device {device.id}: {e}")
+        except Exception as e:
+            if self._app:
+                self._app.logger.error(f"Error handling real-time node update: {e}")
+            else:
+                print(f"Error handling real-time node update: {e}", flush=True)
 
     def profiles(self) -> list[MatterProfile]:
         return [MatterProfile(**profile) for profile in self._profile_specs()]
@@ -912,10 +1021,38 @@ class MatterServerControllerAdapter:
         elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
             command = Clusters.DoorLock.Commands.UnlockDoor()
 
+        expected_patch = {}
+        if normalized in {"turn_on", "on"}:
+            expected_patch["on"] = True
+        elif normalized in {"turn_off", "off"}:
+            expected_patch["on"] = False
+        elif normalized == "toggle":
+            # get current state from node to invert
+            node = None
+            try:
+                node = self._client.get_node(node_id)
+            except Exception:
+                for n in self._client.get_nodes():
+                    if getattr(n, "node_id", None) == node_id:
+                        node = n
+                        break
+            current_on = False
+            if node is not None:
+                current_on = self._attributes_from_node(node).get("on", False)
+            expected_patch["on"] = not current_on
+        elif normalized == "set_level":
+            level = max(0, min(100, int(payload.get("brightness", 0))))
+            expected_patch["brightness"] = level
+            expected_patch["on"] = True if level > 0 else False
+        elif normalized == "lock":
+            expected_patch["locked"] = True
+        elif normalized == "unlock":
+            expected_patch["locked"] = False
+
         if command is not None:
             await self._client.send_device_command(node_id, endpoint_id, command)
-            # Przy operacjach odczekujemy chwile na to, by strumień WebSocket zdążył odebrać event ze statusem
-            await asyncio.sleep(0.5)
+            # Yield minimal execution time instead of blocking for half a second
+            await asyncio.sleep(0.02)
         
         # Zamiast komunikować się po HTTP, pobieramy błyskawicznie node z lokalnej pamięci klienta
         node = None
@@ -933,6 +1070,7 @@ class MatterServerControllerAdapter:
 
         return {
             **updated_attrs,
+            **expected_patch,
             "controller": "matter-server",
             "real_command": (command is not None),
             "node_id": node_id,
@@ -1100,7 +1238,7 @@ class SimulatedMatterController:
         return self._fallback.invoke_command(device_type, action, payload, context)
 
 
-def load_controller_with_status() -> tuple[MatterController, str | None]:
+def load_controller_with_status(repository: Any | None = None, app: Any | None = None) -> tuple[MatterController, str | None]:
     app_role = os.getenv("APP_ROLE", "").strip().lower()
     if app_role == "simulator":
         return SimulatedMatterController(), None
@@ -1108,7 +1246,7 @@ def load_controller_with_status() -> tuple[MatterController, str | None]:
     matter_server_url = os.getenv("MATTER_SERVER_WS_URL", "").strip()
     if matter_server_url:
         try:
-            return MatterServerControllerAdapter(matter_server_url), None
+            return MatterServerControllerAdapter(matter_server_url, repository=repository, app=app), None
         except Exception:
             return MockMatterController(), f"Failed to initialize MatterServerControllerAdapter for MATTER_SERVER_WS_URL={matter_server_url!r}."
 
@@ -1120,11 +1258,6 @@ def load_controller_with_status() -> tuple[MatterController, str | None]:
             return MockMatterController(), f"Failed to load MATTER_CONTROLLER_MODULE={module_name!r}."
 
     return MockMatterController(), "No real Matter controller configured. Set MATTER_SERVER_WS_URL or MATTER_CONTROLLER_MODULE."
-
-
-def load_controller() -> MatterController:
-    controller, _ = load_controller_with_status()
-    return controller
 
 
 def load_controller() -> MatterController:

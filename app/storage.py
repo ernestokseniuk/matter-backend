@@ -55,6 +55,7 @@ class Automation:
     action_payload: dict[str, Any]
     enabled: bool
     created_at: str
+    trigger_operator: str = "=="
 
 
 class DeviceRepository:
@@ -109,6 +110,12 @@ class DeviceRepository:
                 )
                 """
             )
+            existing_automations_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(automations)").fetchall()
+            }
+            if "trigger_operator" not in existing_automations_columns:
+                connection.execute("ALTER TABLE automations ADD COLUMN trigger_operator TEXT NOT NULL DEFAULT '=='")
+                
             existing_columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(devices)").fetchall()
             }
@@ -137,6 +144,11 @@ class DeviceRepository:
     def get_device(self, device_id: str) -> Device | None:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM devices WHERE id = ?", (device_id,)).fetchone()
+        return self._row_to_device(row) if row else None
+
+    def get_device_by_node_id(self, node_id: str) -> Device | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM devices WHERE node_id = ?", (node_id,)).fetchone()
         return self._row_to_device(row) if row else None
 
     def create_device(
@@ -281,7 +293,7 @@ class DeviceRepository:
         return cursor.rowcount > 0
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        connection = sqlite3.connect(self.database_path, timeout=30.0)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -378,6 +390,7 @@ class DeviceRepository:
         action_command: str,
         action_payload: dict[str, Any] | None = None,
         enabled: bool = True,
+        trigger_operator: str = "==",
     ) -> Automation:
         now = _now_iso()
         automation = Automation(
@@ -391,18 +404,20 @@ class DeviceRepository:
             action_payload=action_payload or {},
             enabled=enabled,
             created_at=now,
+            trigger_operator=trigger_operator,
         )
         with self.lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO automations (id, name, trigger_device_id, trigger_attribute, trigger_value, action_device_id, action_command, action_payload, enabled, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO automations (id, name, trigger_device_id, trigger_attribute, trigger_operator, trigger_value, action_device_id, action_command, action_payload, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     automation.id,
                     automation.name,
                     automation.trigger_device_id,
                     automation.trigger_attribute,
+                    automation.trigger_operator,
                     json.dumps(automation.trigger_value),
                     automation.action_device_id,
                     automation.action_command,
@@ -447,4 +462,5 @@ class DeviceRepository:
             action_payload=json.loads(row["action_payload"]),
             enabled=bool(row["enabled"]),
             created_at=row["created_at"],
+            trigger_operator=row["trigger_operator"] if "trigger_operator" in row.keys() else "==",
         )
