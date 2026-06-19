@@ -1,0 +1,27 @@
+services:
+  matter-server:
+    image: ghcr.io/matter-js/python-matter-server:stable
+    restart: unless-stopped
+    network_mode: host
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - matter-server-data:/data
+      - /run/dbus:/run/dbus:ro
+    command: >-
+      --storage-path /data
+      --paa-root-cert-dir /data/credentials
+      --bluetooth-adapter 0
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - matter-server
+    environment:
+      MATTER_SERVER_WS_URL: ws://127.0.0.1:5580/ws
+
+volumes:
+  matter-server-data:

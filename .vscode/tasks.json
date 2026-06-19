@@ -1,0 +1,717 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "rebuild-backend",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"backend"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "test-pairing",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"exec",
+				"matter-backend-backend-1",
+				"python",
+				"-c",
+				"import json,urllib.request; payload={'name':'Test QR','qr_code':'matter://20159913864'}; req=urllib.request.Request('http://127.0.0.1:5000/api/matter/pair', data=json.dumps(payload).encode(), headers={'Content-Type':'application/json'}, method='POST'); resp=urllib.request.urlopen(req); print(resp.status); print(resp.read().decode())"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "test-pairing-2",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"exec",
+				"matter-backend-backend-1",
+				"python",
+				"-c",
+				"import json,urllib.request; payload=dict(name=\"Test QR\", qr_code=\"matter://20159913864\"); req=urllib.request.Request(\"http://127.0.0.1:5000/api/matter/pair\", data=json.dumps(payload).encode(), headers={\"Content-Type\":\"application/json\"}, method=\"POST\"); resp=urllib.request.urlopen(req); print(resp.status); print(resp.read().decode())"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "test-pairing-host",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$body = @{ name = 'Test QR'; qr_code = 'matter://20159913864' } | ConvertTo-Json; try { $response = Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair' -Method Post -ContentType 'application/json' -Body $body; $response | ConvertTo-Json -Depth 10 } catch { Write-Output $_.Exception.Response.StatusCode.value__; Write-Output $_.ErrorDetails.Message }"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "test-pairing-script",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\test_pair.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-backend-2",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"backend"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "test-pairing-script-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\test_pair.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "validate-controller-precedence",
+			"type": "shell",
+			"command": "py",
+			"args": [
+				"-c",
+				"from app.controller import load_controller_with_status; controller, error = load_controller_with_status(); print(type(controller).__name__); print(error)"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "validate-controller-precedence-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\validate_controller.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-docker",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "validate-compose",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"config"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-real-docker",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-no-orphans",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "validate-compose-2",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"config"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-with-matter-server",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-health",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/health' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-ui",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "rebuild-pairing-jobs",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "test-pair-job",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\test_pair_job.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-ui-2",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-health-current",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/health' | ConvertTo-Json -Depth 6"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-discovery-current",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/discover' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-timeout-fix",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-backend-health",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/health' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-matter-discover",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"try { Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/discover' | ConvertTo-Json -Depth 10 } catch { if ($_.ErrorDetails.Message) { Write-Output $_.ErrorDetails.Message } else { Write-Output $_.Exception.Message }; exit 1 }"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-discovery-script",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\check_discover.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "matter-server-logs",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"80",
+				"matter-backend-matter-server-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-stack",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "check-docker-containers",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"ps",
+				"--format",
+				"table {{.Names}}\\t{{.Image}}\\t{{.Status}}"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "check-docker-network",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"network",
+				"inspect",
+				"matter-devices",
+				"--format",
+				"{{json .Containers}}"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-after-pairing-fix",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"--remove-orphans"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "test-pair-normalized",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\test_pair_normalized.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "matter-server-latest",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"60",
+				"matter-backend-matter-server-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-current-pair-job",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/c27e128ed6024ccca47a8065826070a8' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-current-pair-job-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/c27e128ed6024ccca47a8065826070a8' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pair-fresh-light-rgb-12",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$body = @{ name = 'Żarówka RGB'; vendor = 'matter-sim'; endpoint = '1'; pairing_code = '20054912334' } | ConvertTo-Json; Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:5000/api/matter/pair' -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pair-fresh-light-rgb-12-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$body = '{\"name\":\"Zarowka RGB\",\"vendor\":\"matter-sim\",\"endpoint\":\"1\",\"pairing_code\":\"20054912334\"}'; Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:5000/api/matter/pair' -ContentType 'application/json' -Body $body | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pair-fresh-light-rgb-12-3",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"$body = @{ name = \"Zarowka RGB\"; vendor = \"matter-sim\"; endpoint = \"1\"; pairing_code = \"20054912334\" } | ConvertTo-Json; Invoke-RestMethod -Method Post -Uri \"http://127.0.0.1:5000/api/matter/pair\" -ContentType \"application/json\" -Body $body | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "pair-fresh-light-rgb-12-ps1",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\pair_fresh_light_rgb_12.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-fresh-light-rgb-12",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/398218b43bdf4fdf8d7e5e5485c8259e' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "matter-server-after-restart",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"80",
+				"matter-backend-matter-server-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-fresh-light-rgb-12-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/398218b43bdf4fdf8d7e5e5485c8259e' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "backend-pairing-log",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"80",
+				"matter-backend-backend-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-fresh-light-rgb-12-3",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/398218b43bdf4fdf8d7e5e5485c8259e' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "rebuild-backend",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"compose",
+				"up",
+				"-d",
+				"--build",
+				"backend"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "pair-after-cleanup-fix",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				".\\.tmp\\pair_fresh_light_rgb_12.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-after-cleanup-fix",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/24e123bd98174bd28ee923a1889a8e09' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "matter-server-new-job",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"120",
+				"matter-backend-matter-server-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-after-cleanup-fix-2",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/24e123bd98174bd28ee923a1889a8e09' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "matter-server-tail-latest",
+			"type": "shell",
+			"command": "docker",
+			"args": [
+				"logs",
+				"--tail",
+				"40",
+				"matter-backend-matter-server-1"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		},
+		{
+			"label": "poll-after-node14-failure",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/matter/pair/24e123bd98174bd28ee923a1889a8e09' | ConvertTo-Json -Depth 10"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "test"
+		}
+	]
+}

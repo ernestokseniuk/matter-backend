@@ -1,0 +1,831 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Matter Test Hub API",
+    "description": "API backend for discovery, pairing, controlling Matter devices, managing rooms, and configuring simple automations.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/api",
+      "description": "Relative API Path"
+    },
+    {
+      "url": "http://127.0.0.1:5000/api",
+      "description": "Local server"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Check backend and controller health",
+        "responses": {
+          "200": {
+            "description": "Health status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "controller": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string" },
+                        "error": { "type": "string", "nullable": true }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices": {
+      "get": {
+        "summary": "List all paired/discovered devices",
+        "responses": {
+          "200": {
+            "description": "List of devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Device" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Manually create a device",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "vendor": { "type": "string" },
+                  "endpoint": { "type": "string" },
+                  "device_type": { "type": "string" },
+                  "clusters": { "type": "array", "items": { "type": "string" } },
+                  "attributes": { "type": "object" },
+                  "metadata": { "type": "object" },
+                  "status": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/{device_id}": {
+      "get": {
+        "summary": "Get device by ID",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/state": {
+      "get": {
+        "summary": "Get real-time device state/attributes",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device state patch",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device_id": { "type": "string" },
+                    "device_type": { "type": "string" },
+                    "status": { "type": "string" },
+                    "attributes": { "type": "object" },
+                    "metadata": { "type": "object" },
+                    "updated_at": { "type": "string" },
+                    "last_seen_at": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/actions": {
+      "get": {
+        "summary": "List allowed actions/commands for a device type",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Allowed actions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device_id": { "type": "string" },
+                    "device_type": { "type": "string" },
+                    "actions": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/connect": {
+      "post": {
+        "summary": "Mark device status as connected",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connected device details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/disconnect": {
+      "post": {
+        "summary": "Mark device status as disconnected",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Disconnected device details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/command": {
+      "post": {
+        "summary": "Send command to device and update attributes",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                  "action": { "type": "string", "example": "turn_on" },
+                  "payload": { "type": "object", "example": {} }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated device state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" },
+                    "applied": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Action not supported or missing fields" },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/delete": {
+      "post": {
+        "summary": "Delete device from repository",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/devices/{device_id}/room": {
+      "post": {
+        "summary": "Assign device to a room",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "room_id": { "type": "string", "example": "room-uuid-here" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Device with updated room assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device": { "$ref": "#/components/schemas/Device" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Device not found" }
+        }
+      }
+    },
+    "/rooms": {
+      "get": {
+        "summary": "List all rooms",
+        "responses": {
+          "200": {
+            "description": "List of rooms",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "rooms": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Room" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a room",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "example": "Salon" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "room": { "$ref": "#/components/schemas/Room" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing required fields" }
+        }
+      }
+    },
+    "/rooms/{room_id}/delete": {
+      "post": {
+        "summary": "Delete a room",
+        "parameters": [
+          {
+            "name": "room_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Room not found" }
+        }
+      }
+    },
+    "/automations": {
+      "get": {
+        "summary": "List all configured automations",
+        "responses": {
+          "200": {
+            "description": "List of automations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "automations": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/Automation" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a new automation rule",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "trigger_device_id", "trigger_attribute", "trigger_value", "action_device_id", "action_command"],
+                "properties": {
+                  "name": { "type": "string", "example": "Ruch -> Salon ON" },
+                  "trigger_device_id": { "type": "string" },
+                  "trigger_attribute": { "type": "string", "example": "occupancy" },
+                  "trigger_value": { "type": "boolean", "example": true },
+                  "action_device_id": { "type": "string" },
+                  "action_command": { "type": "string", "example": "turn_on" },
+                  "action_payload": { "type": "object", "example": {} },
+                  "enabled": { "type": "boolean", "default": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created automation details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "automation": { "$ref": "#/components/schemas/Automation" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing required fields" }
+        }
+      }
+    },
+    "/automations/{automation_id}/delete": {
+      "post": {
+        "summary": "Delete an automation",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successfully deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Automation not found" }
+        }
+      }
+    },
+    "/automations/{automation_id}/toggle": {
+      "post": {
+        "summary": "Toggle automation state (enabled/disabled)",
+        "parameters": [
+          {
+            "name": "automation_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": { "type": "boolean", "example": true }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Automation with updated state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "automation": { "$ref": "#/components/schemas/Automation" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Automation not found" }
+        }
+      }
+    },
+    "/matter/discover": {
+      "get": {
+        "summary": "Discover nearby Matter devices and view profiles",
+        "responses": {
+          "200": {
+            "description": "Discovered devices & Profiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "discoveries": { "type": "array", "items": { "type": "object" } },
+                    "profiles": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/matter/profiles": {
+      "get": {
+        "summary": "Get supported Matter device profiles",
+        "responses": {
+          "200": {
+            "description": "List of supported profiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "profiles": { "type": "array", "items": { "type": "object" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/device-types": {
+      "get": {
+        "summary": "Get supported device types with friendly labels",
+        "responses": {
+          "200": {
+            "description": "List of device types",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device_types": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "device_type": { "type": "string" },
+                          "label": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/matter/resolve": {
+      "post": {
+        "summary": "Determine device parameters before pairing",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "qr_code": { "type": "string" },
+                  "pairing_code": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resolved parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "device_type": { "type": "string" },
+                    "pairing_method": { "type": "string" },
+                    "resolved_from": { "type": "string" },
+                    "label": { "type": "string" },
+                    "actions": { "type": "array", "items": { "type": "string" } },
+                    "clusters": { "type": "array", "items": { "type": "string" } },
+                    "default_attributes": { "type": "object" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/matter/pair": {
+      "post": {
+        "summary": "Commission/pair a Matter device asynchronously",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" },
+                  "vendor": { "type": "string" },
+                  "endpoint": { "type": "string" },
+                  "qr_code": { "type": "string" },
+                  "pairing_code": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Pairing started (background task created)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "stage": { "type": "string" },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid input parameters" }
+        }
+      }
+    },
+    "/matter/pair/{job_id}": {
+      "get": {
+        "summary": "Check status of a running/completed pairing background job",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Job status and logs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "job_id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "stage": { "type": "string" },
+                    "message": { "type": "string" },
+                    "error": { "type": "string", "nullable": true },
+                    "log": { "type": "array", "items": { "type": "string" } },
+                    "result": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "404": { "description": "Job not found" }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Device": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "vendor": { "type": "string" },
+          "device_type": { "type": "string" },
+          "node_id": { "type": "string" },
+          "status": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "clusters": { "type": "array", "items": { "type": "string" } },
+          "attributes": { "type": "object" },
+          "metadata": { "type": "object" },
+          "created_at": { "type": "string" },
+          "updated_at": { "type": "string" },
+          "last_seen_at": { "type": "string" },
+          "room_id": { "type": "string" }
+        }
+      },
+      "Room": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "created_at": { "type": "string" }
+        }
+      },
+      "Automation": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "trigger_device_id": { "type": "string" },
+          "trigger_attribute": { "type": "string" },
+          "trigger_value": { "type": "object" },
+          "action_device_id": { "type": "string" },
+          "action_command": { "type": "string" },
+          "action_payload": { "type": "object" },
+          "enabled": { "type": "boolean" },
+          "created_at": { "type": "string" }
+        }
+      }
+    }
+  }
+}

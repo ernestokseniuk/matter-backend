@@ -1,0 +1,41 @@
+services:
+  matter-server:
+    image: ghcr.io/matter-js/python-matter-server:stable
+    restart: unless-stopped
+    volumes:
+      - matter-server-data:/data
+      - /run/dbus:/run/dbus:ro
+    command: >-
+      --storage-path /data
+      --paa-root-cert-dir /data/credentials
+      --bluetooth-adapter 0
+    ports:
+      - "5580:5580"
+    networks:
+      - matter-devices
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      - matter-server
+    environment:
+      MATTER_SERVER_WS_URL: ${MATTER_SERVER_WS_URL:-ws://matter-server:5580/ws}
+      PORT: "5000"
+      DATABASE_PATH: /app/data/matter_backend.sqlite3
+    ports:
+      - "5000:5000"
+    volumes:
+      - backend-data:/app/data
+    networks:
+      - matter-devices
+
+networks:
+  matter-devices:
+    external: true
+    name: matter-devices
+
+volumes:
+  matter-server-data:
+  backend-data:

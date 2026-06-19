@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="pl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Matter Hub</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main class="shell">
+      <div id="pairing-overlay" class="pairing-overlay" aria-hidden="true" hidden>
+        <div class="pairing-dialog" role="status" aria-live="polite">
+          <div class="pairing-spinner"></div>
+          <strong id="pairing-loader-title">Parowanie urządzenia</strong>
+          <div id="pairing-loader-stage" class="pairing-stage">Łączenie z urządzeniem. To może chwilę potrwać.</div>
+          <p id="pairing-loader-detail">Łączenie z urządzeniem. To może chwilę potrwać.</p>
+          <ol id="pairing-loader-log" class="pairing-log"></ol>
+        </div>
+      </div>
+
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Matter Test Hub</p>
+          <h1>Backend do testowania urządzeń Matter i ich akcji.</h1>
+          <p class="lead">Jedna strona testowa do wykrywania profili, parowania urządzeń różnych typów i wysyłania podstawowych komend do backendu Flask. <a href="/swagger" target="_blank" style="color: var(--accent); font-weight: 600; text-decoration: underline; margin-left: 8px;">Dokumentacja Swagger API ↗</a></p>
+        </div>
+        <div class="status-card">
+          <span>Stan API</span>
+          <strong id="health-status">Sprawdzanie...</strong>
+          <small id="health-detail">Ładowanie panelu.</small>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Parowanie Matter</h2>
+          <form id="pair-device-form">
+            <input name="name" placeholder="Nazwa urządzenia" required />
+            <input name="vendor" placeholder="Producent" />
+            <input name="endpoint" type="hidden" value="1" />
+            <div class="pairing-mode">
+              <label><input type="radio" name="pairing_method" value="qr" checked /> QR</label>
+              <label><input type="radio" name="pairing_method" value="pairing_code" /> Pairing code</label>
+            </div>
+            <input name="qr_code" id="qr-code-input" placeholder="Wklej QR, np. matter://..." />
+            <input name="pairing_code" id="pairing-code-input" placeholder="Kod pairing, np. 34970123" disabled />
+            <div class="status-inline" id="pairing-resolution">Typ zostanie wykryty automatycznie.</div>
+            <button type="submit">Paruj</button>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>Jak testować akcje</h2>
+          <p class="lead compact-lead">Akcje pojawiają się na karcie każdego urządzenia automatycznie. Klikasz przycisk, a aplikacja wysyła odpowiednią komendę bez ręcznego wpisywania nazwy akcji.</p>
+          <div class="status-inline">Dla akcji wymagających wartości, takich jak jasność albo temperatura, system poprosi tylko o parametry.</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Profile Matter</h2>
+          <button id="refresh-profiles" type="button">Odśwież</button>
+        </div>
+        <div id="profiles" class="device-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Urządzenia</h2>
+          <button id="refresh-devices" type="button">Odśwież</button>
+        </div>
+        <div id="devices" class="device-list"></div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Pokoje</h2>
+          <form id="create-room-form">
+            <input name="name" placeholder="Nazwa pokoju" required />
+            <button type="submit">Utwórz pokój</button>
+          </form>
+          <div id="rooms-list" style="margin-top: 14px; display: grid; gap: 8px;"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Nowa Automatyzacja</h2>
+          <form id="create-automation-form">
+            <input name="name" placeholder="Nazwa automatyzacji" required />
+            
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <label style="color: var(--muted); font-size: 0.9rem;">Urządzenie wyzwalające:</label>
+              <select name="trigger_device_id" id="automation-trigger-device" required style="border-radius: 14px; border: 1px solid var(--border); padding: 12px 14px; background: rgba(15, 23, 42, 0.75); color: var(--text); font: inherit;"></select>
+            </div>
+            
+            <input name="trigger_attribute" placeholder="Atrybut wyzwalający (np. on, open, temperature)" required />
+            <input name="trigger_value" placeholder="Wartość wyzwalająca (np. true, false, 22.5)" required />
+            
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <label style="color: var(--muted); font-size: 0.9rem;">Urządzenie docelowe:</label>
+              <select name="action_device_id" id="automation-action-device" required style="border-radius: 14px; border: 1px solid var(--border); padding: 12px 14px; background: rgba(15, 23, 42, 0.75); color: var(--text); font: inherit;"></select>
+            </div>
+            
+            <div style="display: flex; flex-direction: column; gap: 4px;">
+              <label style="color: var(--muted); font-size: 0.9rem;">Akcja docelowa:</label>
+              <select name="action_command" id="automation-action-command" required style="border-radius: 14px; border: 1px solid var(--border); padding: 12px 14px; background: rgba(15, 23, 42, 0.75); color: var(--text); font: inherit;"></select>
+            </div>
+            
+            <input name="action_payload" placeholder="Payload akcji JSON (opcjonalnie, np. {} lub {&quot;brightness&quot;: 70})" />
+            
+            <button type="submit">Dodaj automatyzację</button>
+          </form>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Automatyzacje</h2>
+          <button id="refresh-automations" type="button">Odśwież</button>
+        </div>
+        <div id="automations-list" class="device-list" style="margin-top: 14px;"></div>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+  </body>
+</html>
