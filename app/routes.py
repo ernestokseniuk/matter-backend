@@ -23,20 +23,37 @@ def _run_background_sync(app_instance):
                 for device in repo.list_devices():
                     if device.status in {"connected", "paired"}:
                         try:
-                            # This will now correctly fetch latest attributes due to our controller fix
+                            # 1. Pobierz najnowszy stan z kontrolera
                             state_patch = service.invoke_command(
                                 device.device_type,
                                 "refresh",
                                 {},
                                 context=device.metadata
                             )
+                            
+                            # 2. Skopiuj stary stan przed zapisem
+                            old_attributes = device.attributes.copy()
+                            
+                            # 3. Zapisz nowy stan do bazy
                             repo.update_device_state(device.id, state_patch)
+                            
+                            # 4. Wykryj, co DOKŁADNIE się zmieniło
+                            changed_patch = {}
+                            for key, value in state_patch.items():
+                                if old_attributes.get(key) != value:
+                                    changed_patch[key] = value
+                                    
+                            # 5. Uruchom automatyzacje TYLKO dla zmienionych wartości
+                            if changed_patch:
+                                check_and_run_automations(device.id, changed_patch)
+                                
                         except Exception:
                             continue
+                        
+                        time.sleep(0.2) # mikro-pauza (jeśli nie korzystasz z rozwiązania na stałym WebSocket)
             except Exception:
                 pass
-            time.sleep(5)
-
+            
 @api.before_request
 def ensure_sync_thread():
     global _sync_started

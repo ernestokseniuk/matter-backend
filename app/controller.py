@@ -694,8 +694,256 @@ def map_raw_attributes(raw_attrs: dict[str, Any]) -> dict[str, Any]:
                 
     return mapped
 
-
 class MatterServerControllerAdapter:
+    def __init__(self, ws_url: str) -> None:
+        self._ws_url = ws_url
+        import threading
+        
+        self._loop = asyncio.new_event_loop()
+        self._client = None
+        self._session = None
+        self._ready_event = threading.Event()
+        
+        # 1. Uruchamiamy klienta Matter w dedykowanym, stale działającym wątku
+        self._thread = threading.Thread(target=self._run_client_loop, daemon=True)
+        self._thread.start()
+        
+        # 2. Czekamy maksymalnie 15 sek. na poprawne podłączenie do WebSocketa
+        self._ready_event.wait(timeout=15.0)
+
+    def _run_client_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop.run_until_complete(self._connect_and_listen())
+
+    async def _connect_and_listen(self):
+        from aiohttp import ClientSession
+        from matter_server.client.client import MatterClient
+        
+        self._session = ClientSession()
+        self._client = MatterClient(self._ws_url, self._session)
+        init_ready = asyncio.Event()
+        
+        # Klient startuje w trybie nasłuchiwania - ściąga bazę node'ów i trzyma ją w pamięci
+        listen_task = asyncio.create_task(self._client.start_listening(init_ready))
+        
+        try:
+            await asyncio.wait_for(init_ready.wait(), timeout=10.0)
+            self._ready_event.set() # Informujemy __init__, że połączenie nawiązane
+            
+            # W tym miejscu MatterClient będzie działał cały czas i odbierał eventy
+            await listen_task
+        except Exception as e:
+            print(f"Błąd stałego połączenia MatterClient: {e}")
+            self._ready_event.set()
+        finally:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+
+    def profiles(self) -> list[MatterProfile]:
+        return [MatterProfile(**profile) for profile in self._profile_specs()]
+
+    # Poniższe metody odpytują stale działającą pętlę async zamiast tworzyć nowe połączenia
+    def discover(self) -> list[dict[str, Any]]:
+        return asyncio.run_coroutine_threadsafe(self._discover_async(), self._loop).result()
+
+    def pair(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return asyncio.run_coroutine_threadsafe(self._pair_async(payload), self._loop).result()
+
+    def invoke_command(
+        self,
+        device_type: str,
+        action: str,
+        payload: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not context:
+            return {"last_action": action, "last_payload": payload, "controller": "matter-server", "real_command": False}
+        return asyncio.run_coroutine_threadsafe(self._invoke_command_async(device_type, action, payload, context), self._loop).result()
+
+    def resolve_pairing(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raw_signature = self._raw_signature(payload)
+        device_type = str(payload.get("device_type", "")).strip() or self._infer_from_signature(raw_signature)
+        pairing_method = "qr_code" if payload.get("qr_code") else "pairing_code" if payload.get("pairing_code") else "unknown"
+        return {
+            "device_type": device_type,
+            "pairing_method": pairing_method,
+            "resolved_from": "matter_server",
+            "raw_signature": raw_signature,
+            "matched": None if device_type == "Generic" else device_type,
+        }
+
+    async def _discover_async(self) -> list[dict[str, Any]]:
+        # Odtąd korzystamy z self._client działającego cały czas
+        nodes = await self._client.discover_commissionable_nodes()
+
+        sim_map = {}
+        try:
+            import urllib.request
+            import json
+            with urllib.request.urlopen("http://matter-sim:3001/devices", timeout=1.0) as response:
+                sim_devices = json.loads(response.read().decode())
+                for sd in sim_devices:
+                    if sd.get("discriminator"):
+                        sim_map[int(sd["discriminator"])] = sd
+        except Exception:
+            try:
+                import urllib.request
+                import json
+                with urllib.request.urlopen("http://127.0.0.1:3001/devices", timeout=1.0) as response:
+                    sim_devices = json.loads(response.read().decode())
+                    for sd in sim_devices:
+                        if sd.get("discriminator"):
+                            sim_map[int(sd["discriminator"])] = sd
+            except Exception:
+                pass
+
+        discoveries = []
+        for node in nodes:
+            disc_val = getattr(node, "long_discriminator", None)
+            mapped_type = self._device_type_name(getattr(node, "device_type", None))
+            
+            sim_device = sim_map.get(disc_val) if disc_val is not None else None
+            
+            raw_name = getattr(node, "device_name", "") or "Urządzenie Matter"
+            if "ar" in raw_name and "wka" in raw_name:
+                device_name = "Żarówka"
+                if "rgb" in raw_name.lower():
+                    device_name = "Żarówka RGB"
+            elif "ci pow" in raw_name:
+                device_name = "Tester jakości powietrza"
+            elif "otwar" in raw_name:
+                device_name = "Czujka otwarcia"
+            else:
+                device_name = raw_name
+            
+            discovery_item = {
+                "instance_name": getattr(node, "instance_name", None),
+                "host_name": getattr(node, "host_name", None),
+                "port": getattr(node, "port", None),
+                "device_name": device_name,
+                "device_type": mapped_type,
+                "addresses": getattr(node, "addresses", []),
+                "long_discriminator": disc_val,
+                "vendor_id": getattr(node, "vendor_id", None),
+                "product_id": getattr(node, "product_id", None),
+            }
+            
+            if sim_device:
+                discovery_item["setup_pin"] = sim_device.get("setupPin")
+                discovery_item["qr_code"] = sim_device.get("qrPairingCode")
+                discovery_item["sim_id"] = sim_device.get("id")
+                
+            discoveries.append(discovery_item)
+        return discoveries
+
+    async def _pair_async(self, payload: dict[str, Any]) -> dict[str, Any]:
+        code = str(payload.get("qr_code") or payload.get("pairing_code") or "").strip()
+        if not code:
+            raise RuntimeError("Pairing code or QR code is required.")
+
+        job_id = str(payload.get("_pair_job_id") or payload.get("metadata", {}).get("_pair_job_id") or "").strip()
+        if job_id:
+            update_job(job_id, stage="commissioning", message="Komisjonowanie urządzenia (persistent client).")
+
+        try:
+            node_data = await asyncio.wait_for(
+                self._client.commission_with_code(code, network_only=bool(payload.get("pairing_code"))),
+                timeout=180,
+            )
+        except asyncio.TimeoutError as exc:
+            if job_id:
+                update_job(job_id, stage="failed", message="Przekroczono czas oczekiwania na komisjonowanie.")
+            raise RuntimeError("Commissioning timed out.") from exc
+
+        node = self._build_node(node_data)
+        device_type = self._device_type_from_node(node)
+        endpoint_id = self._primary_endpoint_id(node)
+        profile = self._profile_for_type(device_type)
+            
+        return {
+            "name": payload.get("name") or self._node_name(node),
+            "vendor": payload.get("vendor") or self._node_vendor(node),
+            "device_type": device_type,
+            "endpoint": str(endpoint_id),
+            "clusters": profile["clusters"],
+            "attributes": self._attributes_from_node(node),
+            "metadata": {
+                "controller": "matter-server",
+                "matter_node_id": getattr(node_data, "node_id", None),
+                "matter_endpoint_id": endpoint_id,
+                "pairing_code": payload.get("pairing_code", ""),
+                "qr_code": payload.get("qr_code", ""),
+                "transport": payload.get("transport", "matter"),
+                "pairing_method": "pairing_code" if payload.get("pairing_code") else "qr_code",
+                "resolved_from": "commissioning_result",
+                "pairing_completed": True,
+            },
+        }
+
+    async def _invoke_command_async(
+        self,
+        device_type: str,
+        action: str,
+        payload: dict[str, Any],
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        from chip.clusters import Objects as Clusters
+
+        node_id = int(context.get("matter_node_id") or context.get("node_id"))
+        endpoint_id = int(context.get("matter_endpoint_id") or context.get("endpoint") or 1)
+        normalized = action.lower().strip()
+        command = None
+
+        if normalized in {"turn_on", "on"} and hasattr(Clusters.OnOff.Commands, "On"):
+            command = Clusters.OnOff.Commands.On()
+        elif normalized in {"turn_off", "off"} and hasattr(Clusters.OnOff.Commands, "Off"):
+            command = Clusters.OnOff.Commands.Off()
+        elif normalized == "toggle" and hasattr(Clusters.OnOff.Commands, "Toggle"):
+            command = Clusters.OnOff.Commands.Toggle()
+        elif normalized == "set_level" and hasattr(Clusters.LevelControl.Commands, "MoveToLevelWithOnOff"):
+            level = max(0, min(100, int(payload.get("brightness", 0))))
+            command = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level * 254 // 100, transitionTime=0)
+        elif normalized == "lock" and hasattr(Clusters.DoorLock.Commands, "LockDoor"):
+            command = Clusters.DoorLock.Commands.LockDoor()
+        elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
+            command = Clusters.DoorLock.Commands.UnlockDoor()
+
+        if command is not None:
+            await self._client.send_device_command(node_id, endpoint_id, command)
+            # Przy operacjach odczekujemy chwile na to, by strumień WebSocket zdążył odebrać event ze statusem
+            await asyncio.sleep(0.5)
+        
+        # Zamiast komunikować się po HTTP, pobieramy błyskawicznie node z lokalnej pamięci klienta
+        node = None
+        try:
+            node = self._client.get_node(node_id)
+        except Exception:
+            for n in self._client.get_nodes():
+                if getattr(n, "node_id", None) == node_id:
+                    node = n
+                    break
+        
+        updated_attrs = {}
+        if node is not None:
+            updated_attrs = self._attributes_from_node(node)
+
+        return {
+            **updated_attrs,
+            "controller": "matter-server",
+            "real_command": (command is not None),
+            "node_id": node_id,
+            "endpoint": endpoint_id,
+            "device_type": device_type,
+            "action": action,
+        }
+    
+    # ... PONIŻEJ ZOSTAW METODY POMOCNICZE BEZ ZMIAN (np. _build_node, _primary_endpoint_id, _device_type_name) ...
     def __init__(self, ws_url: str) -> None:
         self._ws_url = ws_url
 
@@ -1166,3 +1414,4 @@ def load_controller() -> MatterController:
 def load_controller() -> MatterController:
     controller, _ = load_controller_with_status()
     return controller
+
