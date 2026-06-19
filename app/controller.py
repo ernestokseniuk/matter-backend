@@ -730,7 +730,6 @@ class MatterServerControllerAdapter:
         asyncio.set_event_loop(self._loop)
         while True: # Pętla podtrzymująca życie wątku
             try:
-                self._ready_event.clear()
                 self._loop.run_until_complete(self._connect_and_listen())
             except Exception as e:
                 print(f"Krytyczny błąd połączenia Matter: {e}. Restart za 5s...")
@@ -768,53 +767,50 @@ class MatterServerControllerAdapter:
             await listen_task
         finally:
             # Sprzątanie przy błędzie
-            self._ready_event.clear()
             listen_task.cancel()
-            try:
-                await listen_task
-            except Exception:
-                pass
-            try:
-                await self._session.close()
-            except Exception:
-                pass
+            await self._session.close()
 
     def _handle_realtime_attribute_update(self, node_id: int, attribute_path: str, new_value: Any):
-        if not self._repository:
-            return
-        try:
-            device = self._repository.get_device_by_node_id(str(node_id))
-            if not device:
+            if not self._repository:
                 return
+            try:
+                device = self._repository.get_device_by_node_id(str(node_id))
+                if not device:
+                    return
 
-            state_patch = map_single_attribute(attribute_path, new_value)
-            if not state_patch:
-                return
+                state_patch = map_single_attribute(attribute_path, new_value)
+                if not state_patch:
+                    return
 
-            different = False
-            for k, v in state_patch.items():
-                if device.attributes.get(k) != v:
-                    different = True
-                    break
+                different = False
+                for k, v in state_patch.items():
+                    if device.attributes.get(k) != v:
+                        different = True
+                        break
 
-            if different:
-                self._repository.update_device_state(device.id, state_patch)
-                print(f"[Real-time] Node {node_id} state updated: {state_patch}", flush=True)
-                
+                if different:
+                    self._repository.update_device_state(device.id, state_patch)
+                    print(f"[Real-time] Node {node_id} state updated: {state_patch}", flush=True)
+                    
+                    if self._app:
+                        import threading
+                        from .routes import check_and_run_automations
+                        
+                        def run_automations_in_background():
+                            with self._app.app_context():
+                                try:
+                                    check_and_run_automations(device.id, state_patch)
+                                except Exception as e:
+                                    self._app.logger.error(f"Error running real-time automations for device {device.id}: {e}")
+                                    
+                        threading.Thread(target=run_automations_in_background, daemon=True).start()
+                else:
+                    print(f"[Real-time] Node {node_id} state (humidity) is same: {state_patch}", flush=True)
+            except Exception as e:
                 if self._app:
-                    from .routes import check_and_run_automations
-                    with self._app.app_context():
-                        try:
-                            check_and_run_automations(device.id, state_patch)
-                        except Exception as e:
-                            self._app.logger.error(f"Error running real-time automations for device {device.id}: {e}")
-            else:
-                print(f"[Real-time] Node {node_id} state (humidity) is same: {state_patch}", flush=True)
-        except Exception as e:
-            if self._app:
-                self._app.logger.error(f"Error handling real-time attribute update: {e}")
-            else:
-                print(f"Error handling real-time attribute update: {e}", flush=True)
+                    self._app.logger.error(f"Error handling real-time attribute update: {e}")
+                else:
+                    print(f"Error handling real-time attribute update: {e}", flush=True)
 
     def _handle_realtime_node_update(self, node_id: int, node: Any):
         if not self._repository:
@@ -839,12 +835,17 @@ class MatterServerControllerAdapter:
                 print(f"[Real-time Node] Node {node_id} state updated: {state_patch}", flush=True)
                 
                 if self._app:
+                    import threading
                     from .routes import check_and_run_automations
-                    with self._app.app_context():
-                        try:
-                            check_and_run_automations(device.id, state_patch)
-                        except Exception as e:
-                            self._app.logger.error(f"Error running real-time node automations for device {device.id}: {e}")
+                    
+                    def run_node_automations_in_background():
+                        with self._app.app_context():
+                            try:
+                                check_and_run_automations(device.id, state_patch)
+                            except Exception as e:
+                                self._app.logger.error(f"Error running real-time node automations for device {device.id}: {e}")
+                                
+                    threading.Thread(target=run_node_automations_in_background, daemon=True).start()
         except Exception as e:
             if self._app:
                 self._app.logger.error(f"Error handling real-time node update: {e}")
@@ -1006,20 +1007,38 @@ class MatterServerControllerAdapter:
         endpoint_id = int(context.get("matter_endpoint_id") or context.get("endpoint") or 1)
         normalized = action.lower().strip()
         command = None
+        target_cluster_id = None
 
+        # Przypisanie komend i identyfikatorów klastrów
         if normalized in {"turn_on", "on"} and hasattr(Clusters.OnOff.Commands, "On"):
             command = Clusters.OnOff.Commands.On()
+            target_cluster_id = 6
         elif normalized in {"turn_off", "off"} and hasattr(Clusters.OnOff.Commands, "Off"):
             command = Clusters.OnOff.Commands.Off()
+            target_cluster_id = 6
         elif normalized == "toggle" and hasattr(Clusters.OnOff.Commands, "Toggle"):
             command = Clusters.OnOff.Commands.Toggle()
+            target_cluster_id = 6
         elif normalized == "set_level" and hasattr(Clusters.LevelControl.Commands, "MoveToLevelWithOnOff"):
             level = max(0, min(100, int(payload.get("brightness", 0))))
             command = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level * 254 // 100, transitionTime=0)
+            target_cluster_id = 8
         elif normalized == "lock" and hasattr(Clusters.DoorLock.Commands, "LockDoor"):
             command = Clusters.DoorLock.Commands.LockDoor()
+            target_cluster_id = 257
         elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
             command = Clusters.DoorLock.Commands.UnlockDoor()
+            target_cluster_id = 257
+
+        # Szybkie pobranie węzła z cache'u klienta Matter (by np. ustalić poprawny endpoint)
+        node = None
+        try:
+            node = self._client.get_node(node_id)
+        except Exception:
+            for n in self._client.get_nodes():
+                if getattr(n, "node_id", None) == node_id:
+                    node = n
+                    break
 
         expected_patch = {}
         if normalized in {"turn_on", "on"}:
@@ -1027,15 +1046,6 @@ class MatterServerControllerAdapter:
         elif normalized in {"turn_off", "off"}:
             expected_patch["on"] = False
         elif normalized == "toggle":
-            # get current state from node to invert
-            node = None
-            try:
-                node = self._client.get_node(node_id)
-            except Exception:
-                for n in self._client.get_nodes():
-                    if getattr(n, "node_id", None) == node_id:
-                        node = n
-                        break
             current_on = False
             if node is not None:
                 current_on = self._attributes_from_node(node).get("on", False)
@@ -1049,34 +1059,33 @@ class MatterServerControllerAdapter:
         elif normalized == "unlock":
             expected_patch["locked"] = False
 
-        if command is not None:
-            await self._client.send_device_command(node_id, endpoint_id, command)
-            # Yield minimal execution time instead of blocking for half a second
-            await asyncio.sleep(0.02)
-        
-        # Zamiast komunikować się po HTTP, pobieramy błyskawicznie node z lokalnej pamięci klienta
-        node = None
-        try:
-            node = self._client.get_node(node_id)
-        except Exception:
-            for n in self._client.get_nodes():
-                if getattr(n, "node_id", None) == node_id:
-                    node = n
+        # === INTELIGENTNE WYSZUKIWANIE ENDPOINTU ===
+        # Iterujemy po dostępnych endpointach, by upewnić się, że wysyłamy komendę tam, gdzie faktycznie jest dany klaster (np. przekaźnik)
+        if node is not None and target_cluster_id is not None:
+            for ep_id, ep in getattr(node, "endpoints", {}).items():
+                if ep_id == 0:
+                    continue  # Pomijamy klaster systemowy 0
+                if hasattr(ep, "get_cluster") and ep.get_cluster(target_cluster_id) is not None:
+                    endpoint_id = ep_id
                     break
-        
+
+        if command is not None:
+            try:
+                await self._client.send_device_command(node_id, endpoint_id, command)
+                await asyncio.sleep(0.02)
+            except Exception as e:
+                print(f"[Command Error] Nieudane wysłanie komendy do urządzenia {node_id} na endpoint {endpoint_id}: {e}", flush=True)
+                # Jak wywali błąd (urządzenie offline lub nieobsługiwane), czyścimy patch, by frontend i baza pozostały bez zmian (pokazując prawdę)
+                expected_patch.clear()
+
         updated_attrs = {}
         if node is not None:
             updated_attrs = self._attributes_from_node(node)
 
+        # ZWRACAMY TYLKO CZYSTE ATRYBUTY (bez "controller", "real_command", "node_id" itp.)
         return {
             **updated_attrs,
-            **expected_patch,
-            "controller": "matter-server",
-            "real_command": (command is not None),
-            "node_id": node_id,
-            "endpoint": endpoint_id,
-            "device_type": device_type,
-            "action": action,
+            **expected_patch
         }
     
     # ... PONIŻEJ ZOSTAW METODY POMOCNICZE BEZ ZMIAN (np. _build_node, _primary_endpoint_id, _device_type_name) ...
