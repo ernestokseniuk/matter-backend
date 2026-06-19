@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 from typing import Any, Protocol
 
+
 from .pairing_jobs import append_job_log, update_job
 
 
@@ -712,8 +713,14 @@ class MatterServerControllerAdapter:
         self._ready_event.wait(timeout=15.0)
 
     def _run_client_loop(self):
+        import time
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._connect_and_listen())
+        while True: # Pętla podtrzymująca życie wątku
+            try:
+                self._loop.run_until_complete(self._connect_and_listen())
+            except Exception as e:
+                print(f"Krytyczny błąd połączenia Matter: {e}. Restart za 5s...")
+                time.sleep(5)
 
     async def _connect_and_listen(self):
         from aiohttp import ClientSession
@@ -723,27 +730,17 @@ class MatterServerControllerAdapter:
         self._client = MatterClient(self._ws_url, self._session)
         init_ready = asyncio.Event()
         
-        # Klient startuje w trybie nasłuchiwania - ściąga bazę node'ów i trzyma ją w pamięci
+        # start_listening rzuca wyjątek, jeśli połączenie nie może zostać nawiązane
         listen_task = asyncio.create_task(self._client.start_listening(init_ready))
         
         try:
             await asyncio.wait_for(init_ready.wait(), timeout=10.0)
-            self._ready_event.set() # Informujemy __init__, że połączenie nawiązane
-            
-            # W tym miejscu MatterClient będzie działał cały czas i odbierał eventy
-            await listen_task
-        except Exception as e:
-            print(f"Błąd stałego połączenia MatterClient: {e}")
             self._ready_event.set()
+            await listen_task
         finally:
-            try:
-                await self._client.disconnect()
-            except Exception:
-                pass
-            try:
-                await self._session.close()
-            except Exception:
-                pass
+            # Sprzątanie przy błędzie
+            listen_task.cancel()
+            await self._session.close()
 
     def profiles(self) -> list[MatterProfile]:
         return [MatterProfile(**profile) for profile in self._profile_specs()]
@@ -860,6 +857,7 @@ class MatterServerControllerAdapter:
             if job_id:
                 update_job(job_id, stage="failed", message="Przekroczono czas oczekiwania na komisjonowanie.")
             raise RuntimeError("Commissioning timed out.") from exc
+            
 
         node = self._build_node(node_data)
         device_type = self._device_type_from_node(node)
@@ -944,289 +942,7 @@ class MatterServerControllerAdapter:
         }
     
     # ... PONIŻEJ ZOSTAW METODY POMOCNICZE BEZ ZMIAN (np. _build_node, _primary_endpoint_id, _device_type_name) ...
-    def __init__(self, ws_url: str) -> None:
-        self._ws_url = ws_url
-
-    def profiles(self) -> list[MatterProfile]:
-        return [MatterProfile(**profile) for profile in self._profile_specs()]
-
-    def discover(self) -> list[dict[str, Any]]:
-        return asyncio.run(self._discover_async())
-
-    def pair(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return asyncio.run(self._pair_async(payload))
-
-    def resolve_pairing(self, payload: dict[str, Any]) -> dict[str, Any]:
-        raw_signature = self._raw_signature(payload)
-        device_type = str(payload.get("device_type", "")).strip() or self._infer_from_signature(raw_signature)
-        pairing_method = "qr_code" if payload.get("qr_code") else "pairing_code" if payload.get("pairing_code") else "unknown"
-        return {
-            "device_type": device_type,
-            "pairing_method": pairing_method,
-            "resolved_from": "matter_server",
-            "raw_signature": raw_signature,
-            "matched": None if device_type == "Generic" else device_type,
-        }
-
-    def invoke_command(
-        self,
-        device_type: str,
-        action: str,
-        payload: dict[str, Any],
-        context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        if not context:
-            return {"last_action": action, "last_payload": payload, "controller": "matter-server", "real_command": False}
-        return asyncio.run(self._invoke_command_async(device_type, action, payload, context))
-
-    async def _discover_async(self) -> list[dict[str, Any]]:
-        client, session = await self._open_client()
-        init_ready = asyncio.Event()
-        listen_task = asyncio.create_task(client.start_listening(init_ready))
-        try:
-            await asyncio.wait_for(init_ready.wait(), timeout=10.0)
-            nodes = await client.discover_commissionable_nodes()
-
-            # Enrich known simulated devices to provide setup pin and qr code, 
-            # while fully adhering to real mDNS discovery
-            sim_map = {}
-            try:
-                import urllib.request
-                import json
-                with urllib.request.urlopen("http://matter-sim:3001/devices", timeout=1.0) as response:
-                    sim_devices = json.loads(response.read().decode())
-                    for sd in sim_devices:
-                        if sd.get("discriminator"):
-                            sim_map[int(sd["discriminator"])] = sd
-            except Exception:
-                try:
-                    with urllib.request.urlopen("http://127.0.0.1:3001/devices", timeout=1.0) as response:
-                        sim_devices = json.loads(response.read().decode())
-                        for sd in sim_devices:
-                            if sd.get("discriminator"):
-                                sim_map[int(sd["discriminator"])] = sd
-                except Exception:
-                    pass
-
-            discoveries = []
-            for node in nodes:
-                disc_val = getattr(node, "long_discriminator", None)
-                mapped_type = self._device_type_name(getattr(node, "device_type", None))
-                
-                # Fetch matching simulated credentials if available
-                sim_device = sim_map.get(disc_val) if disc_val is not None else None
-                
-                # Format name carefully
-                raw_name = getattr(node, "device_name", "") or "Urządzenie Matter"
-                if "ar" in raw_name and "wka" in raw_name:
-                    device_name = "Żarówka"
-                    if "rgb" in raw_name.lower():
-                        device_name = "Żarówka RGB"
-                elif "ci pow" in raw_name:
-                    device_name = "Tester jakości powietrza"
-                elif "otwar" in raw_name:
-                    device_name = "Czujka otwarcia"
-                else:
-                    device_name = raw_name
-                
-                discovery_item = {
-                    "instance_name": getattr(node, "instance_name", None),
-                    "host_name": getattr(node, "host_name", None),
-                    "port": getattr(node, "port", None),
-                    "device_name": device_name,
-                    "device_type": mapped_type,
-                    "addresses": getattr(node, "addresses", []),
-                    "long_discriminator": disc_val,
-                    "vendor_id": getattr(node, "vendor_id", None),
-                    "product_id": getattr(node, "product_id", None),
-                }
-                
-                if sim_device:
-                    discovery_item["setup_pin"] = sim_device.get("setupPin")
-                    discovery_item["qr_code"] = sim_device.get("qrPairingCode")
-                    discovery_item["sim_id"] = sim_device.get("id")
-                    
-                discoveries.append(discovery_item)
-            return discoveries
-        finally:
-            try:
-                listen_task.cancel()
-                await listen_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            await self._safe_close_client(client, session)
-
-    async def _pair_async(self, payload: dict[str, Any]) -> dict[str, Any]:
-        code = str(payload.get("qr_code") or payload.get("pairing_code") or "").strip()
-        if not code:
-            raise RuntimeError("Pairing code or QR code is required.")
-
-        job_id = str(payload.get("_pair_job_id") or payload.get("metadata", {}).get("_pair_job_id") or "").strip()
-        if job_id:
-            update_job(job_id, status="running", stage="connecting", message="Łączenie z Matter Serverem.")
-            append_job_log(job_id, "Nawiązywanie połączenia websocket z kontrolerem Matter.")
-
-        client, session = await self._open_client()
-        init_ready = asyncio.Event()
-        listen_task = asyncio.create_task(client.start_listening(init_ready))
-        try:
-            await asyncio.wait_for(init_ready.wait(), timeout=10.0)
-            if job_id:
-                update_job(job_id, stage="commissioning", message="Komisjonowanie urządzenia.")
-                append_job_log(job_id, "Wysłano kod QR lub pairing code do Matter Servera.")
-                update_job(job_id, stage="commissioning", message="Oczekiwanie na wynik komisjonowania.")
-                append_job_log(job_id, "Jeśli to trwa długo, urządzenie może nie potwierdzać parowania albo kontroler nie widzi go w sieci.")
-            try:
-                node_data = await asyncio.wait_for(
-                    client.commission_with_code(code, network_only=bool(payload.get("pairing_code"))),
-                    timeout=180,
-                )
-            except asyncio.TimeoutError as exc:
-                if job_id:
-                    update_job(job_id, stage="failed", message="Przekroczono czas oczekiwania na komisjonowanie.")
-                    append_job_log(job_id, "Matter Server nie zwrócił wyniku komisjonowania w limicie czasu.")
-                raise RuntimeError("Commissioning timed out after 180 seconds. Check whether the device is on the same network and awaiting confirmation.") from exc
-            if job_id:
-                update_job(job_id, stage="reading_node", message="Odczytuję dane nowego node'a.")
-                append_job_log(job_id, "Odebrano odpowiedź z kontrolera, buduję profil urządzenia.")
-            node = self._build_node(node_data)
-            device_type = self._device_type_from_node(node)
-            endpoint_id = self._primary_endpoint_id(node)
-            profile = self._profile_for_type(device_type)
-            if job_id:
-                update_job(job_id, stage="finalizing", message="Zapisuję urządzenie w backendzie.")
-            return {
-                "name": payload.get("name") or self._node_name(node),
-                "vendor": payload.get("vendor") or self._node_vendor(node),
-                "device_type": device_type,
-                "endpoint": str(endpoint_id),
-                "clusters": profile["clusters"],
-                "attributes": self._attributes_from_node(node),
-                "metadata": {
-                    "controller": "matter-server",
-                    "matter_node_id": getattr(node_data, "node_id", None),
-                    "matter_endpoint_id": endpoint_id,
-                    "pairing_code": payload.get("pairing_code", ""),
-                    "qr_code": payload.get("qr_code", ""),
-                    "transport": payload.get("transport", "matter"),
-                    "pairing_method": "pairing_code" if payload.get("pairing_code") else "qr_code",
-                    "resolved_from": "commissioning_result",
-                    "pairing_completed": True,
-                },
-            }
-        finally:
-            try:
-                listen_task.cancel()
-                await listen_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            await self._safe_close_client(client, session, job_id=job_id)
-
-    async def _invoke_command_async(
-        self,
-        device_type: str,
-        action: str,
-        payload: dict[str, Any],
-        context: dict[str, Any],
-    ) -> dict[str, Any]:
-        client, session = await self._open_client()
-        init_ready = asyncio.Event()
-        listen_task = asyncio.create_task(client.start_listening(init_ready))
-        try:
-            await asyncio.wait_for(init_ready.wait(), timeout=10.0)
-            from chip.clusters import Objects as Clusters
-
-            node_id = int(context.get("matter_node_id") or context.get("node_id"))
-            endpoint_id = int(context.get("matter_endpoint_id") or context.get("endpoint") or 1)
-            normalized = action.lower().strip()
-            command = None
-
-            if normalized in {"turn_on", "on"} and hasattr(Clusters.OnOff.Commands, "On"):
-                command = Clusters.OnOff.Commands.On()
-            elif normalized in {"turn_off", "off"} and hasattr(Clusters.OnOff.Commands, "Off"):
-                command = Clusters.OnOff.Commands.Off()
-            elif normalized == "toggle" and hasattr(Clusters.OnOff.Commands, "Toggle"):
-                command = Clusters.OnOff.Commands.Toggle()
-            elif normalized == "set_level" and hasattr(Clusters.LevelControl.Commands, "MoveToLevelWithOnOff"):
-                level = max(0, min(100, int(payload.get("brightness", 0))))
-                command = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level * 254 // 100, transitionTime=0)
-            elif normalized == "lock" and hasattr(Clusters.DoorLock.Commands, "LockDoor"):
-                command = Clusters.DoorLock.Commands.LockDoor()
-            elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
-                command = Clusters.DoorLock.Commands.UnlockDoor()
-
-            if command is not None:
-                await client.send_device_command(node_id, endpoint_id, command)
-                # Wait briefly for attributes to propagate
-                await asyncio.sleep(0.5)
-            
-            node = None
-            try:
-                node = client.get_node(node_id)
-            except Exception:
-                for n in client.get_nodes():
-                    if getattr(n, "node_id", None) == node_id:
-                        node = n
-                        break
-            
-            updated_attrs = {}
-            if node is not None:
-                updated_attrs = self._attributes_from_node(node)
-
-            return {
-                **updated_attrs,
-                "controller": "matter-server",
-                "real_command": (command is not None),
-                "node_id": node_id,
-                "endpoint": endpoint_id,
-                "device_type": device_type,
-                "action": action,
-            }
-        finally:
-            try:
-                await asyncio.wait_for(client.disconnect(), timeout=3.0)
-            except Exception:
-                pass
-            try:
-                listen_task.cancel()
-                await listen_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            try:
-                await asyncio.wait_for(session.close(), timeout=2.0)
-            except Exception:
-                pass
-
-    async def _open_client(self):
-        try:
-            from aiohttp import ClientSession
-            from matter_server.client.client import MatterClient
-        except Exception as exc:  # pragma: no cover
-            raise RuntimeError("Real Matter controller requires 'aiohttp' and 'python-matter-server'.") from exc
-
-        session = ClientSession()
-        client = MatterClient(self._ws_url, session)
-        return client, session
-
-    async def _safe_close_client(self, client: Any, session: Any, job_id: str | None = None) -> None:
-        try:
-            await asyncio.wait_for(client.disconnect(), timeout=15)
-        except Exception as exc:
-            if job_id:
-                append_job_log(job_id, f"Ostrzeżenie: nie udało się szybko rozłączyć Matter Servera ({exc}).")
-
-        try:
-            await asyncio.wait_for(session.close(), timeout=15)
-        except Exception as exc:
-            if job_id:
-                append_job_log(job_id, f"Ostrzeżenie: nie udało się szybko zamknąć sesji HTTP ({exc}).")
-
+   
     def _build_node(self, node_data: Any):
         from matter_server.client.models.node import MatterNode
 

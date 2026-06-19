@@ -14,55 +14,61 @@ api = Blueprint("api", __name__)
 _sync_lock = Lock()
 _sync_started = False
 
+import asyncio
+
+import asyncio
+import time
+from flask import current_app
+
+api = Blueprint("api", __name__)
+
+_sync_lock = Lock()
+_sync_thread = None
+
 def _run_background_sync(app_instance):
     with app_instance.app_context():
+        controller = current_app.extensions["matter_controller"]
         while True:
             try:
-                service = _service()
+                # Sprawdzenie czy kontroler jest zainicjalizowany
+                if hasattr(controller, "_ready_event") and not controller._ready_event.is_set():
+                    time.sleep(5)
+                    continue
+                
                 repo = _repository()
-                for device in repo.list_devices():
+                devices = repo.list_devices()
+                
+                for device in devices:
                     if device.status in {"connected", "paired"}:
                         try:
-                            # 1. Pobierz najnowszy stan z kontrolera
-                            state_patch = service.invoke_command(
-                                device.device_type,
-                                "refresh",
-                                {},
-                                context=device.metadata
-                            )
-                            
-                            # 2. Skopiuj stary stan przed zapisem
-                            old_attributes = device.attributes.copy()
-                            
-                            # 3. Zapisz nowy stan do bazy
-                            repo.update_device_state(device.id, state_patch)
-                            
-                            # 4. Wykryj, co DOKŁADNIE się zmieniło
-                            changed_patch = {}
-                            for key, value in state_patch.items():
-                                if old_attributes.get(key) != value:
-                                    changed_patch[key] = value
-                                    
-                            # 5. Uruchom automatyzacje TYLKO dla zmienionych wartości
-                            if changed_patch:
-                                check_and_run_automations(device.id, changed_patch)
-                                
+                            # ODŁĄCZYŁEM Refresh! Czytamy tylko z pamięci (cache)
+                            node_id = int(device.metadata.get("matter_node_id", 0))
+                            if hasattr(controller, "_client") and controller._client:
+                                node = controller._client.get_node(node_id)
+                                if node:
+                                    # Pobranie stanu z lokalnej pamięci (cache)
+                                    state_patch = map_raw_attributes(node.node_data.attributes)
+                                    if state_patch and state_patch != device.attributes:
+                                        repo.update_device_state(device.id, state_patch)
+                                        # Automatyzacje
+                                        check_and_run_automations(device.id, state_patch)
                         except Exception:
                             continue
-                        
-                        time.sleep(0.2) # mikro-pauza (jeśli nie korzystasz z rozwiązania na stałym WebSocket)
-            except Exception:
-                pass
+                time.sleep(1.0)
+            except Exception as e:
+                print(f"Sync thread crashed: {e}")
+                time.sleep(10)
             
 @api.before_request
 def ensure_sync_thread():
-    global _sync_started
-    if not _sync_started:
+    global _sync_thread
+    if _sync_thread is None or not _sync_thread.is_alive():
         with _sync_lock:
-            if not _sync_started:
+            if _sync_thread is None or not _sync_thread.is_alive():
                 app_instance = current_app._get_current_object()
-                Thread(target=_run_background_sync, args=(app_instance,), daemon=True).start()
-                _sync_started = True
+                _sync_thread = Thread(target=_run_background_sync, args=(app_instance,), daemon=True)
+                _sync_thread.start()
+                print("Background sync thread started.")
 
 def _normalize_pairing_payload(payload: dict[str, object]) -> dict[str, object]:
     normalized = dict(payload)
