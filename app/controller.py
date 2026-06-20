@@ -48,7 +48,17 @@ class MatterController(Protocol):
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        ...
+        # Poprawka 1: Sprawdzenie, czy faktycznie mamy node_id w metadanych urządzenia
+        if not context or not (context.get("matter_node_id") or context.get("node_id")):
+            return {
+                "last_action": action, 
+                "last_payload": payload, 
+                "controller": "matter-server", 
+                "real_command": False,
+                "error": "Brak node_id w metadanych (urządzenie prawdopodobnie nie jest w pełni sparowane)."
+            }
+            
+        return asyncio.run(self._invoke_command_async(device_type, action, payload, context))
 
 
 class MockMatterController:
@@ -1001,92 +1011,107 @@ class MatterServerControllerAdapter:
         payload: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        from chip.clusters import Objects as Clusters
-
-        node_id = int(context.get("matter_node_id") or context.get("node_id"))
-        endpoint_id = int(context.get("matter_endpoint_id") or context.get("endpoint") or 1)
-        normalized = action.lower().strip()
-        command = None
-        target_cluster_id = None
-
-        # Przypisanie komend i identyfikatorów klastrów
-        if normalized in {"turn_on", "on"} and hasattr(Clusters.OnOff.Commands, "On"):
-            command = Clusters.OnOff.Commands.On()
-            target_cluster_id = 6
-        elif normalized in {"turn_off", "off"} and hasattr(Clusters.OnOff.Commands, "Off"):
-            command = Clusters.OnOff.Commands.Off()
-            target_cluster_id = 6
-        elif normalized == "toggle" and hasattr(Clusters.OnOff.Commands, "Toggle"):
-            command = Clusters.OnOff.Commands.Toggle()
-            target_cluster_id = 6
-        elif normalized == "set_level" and hasattr(Clusters.LevelControl.Commands, "MoveToLevelWithOnOff"):
-            level = max(0, min(100, int(payload.get("brightness", 0))))
-            command = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level * 254 // 100, transitionTime=0)
-            target_cluster_id = 8
-        elif normalized == "lock" and hasattr(Clusters.DoorLock.Commands, "LockDoor"):
-            command = Clusters.DoorLock.Commands.LockDoor()
-            target_cluster_id = 257
-        elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
-            command = Clusters.DoorLock.Commands.UnlockDoor()
-            target_cluster_id = 257
-
-        # Szybkie pobranie węzła z cache'u klienta Matter (by np. ustalić poprawny endpoint)
-        node = None
         try:
-            node = self._client.get_node(node_id)
-        except Exception:
-            for n in self._client.get_nodes():
-                if getattr(n, "node_id", None) == node_id:
-                    node = n
-                    break
-
-        expected_patch = {}
-        if normalized in {"turn_on", "on"}:
-            expected_patch["on"] = True
-        elif normalized in {"turn_off", "off"}:
-            expected_patch["on"] = False
-        elif normalized == "toggle":
-            current_on = False
-            if node is not None:
-                current_on = self._attributes_from_node(node).get("on", False)
-            expected_patch["on"] = not current_on
-        elif normalized == "set_level":
-            level = max(0, min(100, int(payload.get("brightness", 0))))
-            expected_patch["brightness"] = level
-            expected_patch["on"] = True if level > 0 else False
-        elif normalized == "lock":
-            expected_patch["locked"] = True
-        elif normalized == "unlock":
-            expected_patch["locked"] = False
-
-        # === INTELIGENTNE WYSZUKIWANIE ENDPOINTU ===
-        # Iterujemy po dostępnych endpointach, by upewnić się, że wysyłamy komendę tam, gdzie faktycznie jest dany klaster (np. przekaźnik)
-        if node is not None and target_cluster_id is not None:
-            for ep_id, ep in getattr(node, "endpoints", {}).items():
-                if ep_id == 0:
-                    continue  # Pomijamy klaster systemowy 0
-                if hasattr(ep, "get_cluster") and ep.get_cluster(target_cluster_id) is not None:
-                    endpoint_id = ep_id
-                    break
-
-        if command is not None:
+            # Bezpieczny import klastrów z fallbackiem
             try:
-                await self._client.send_device_command(node_id, endpoint_id, command)
-                await asyncio.sleep(0.02)
-            except Exception as e:
-                print(f"[Command Error] Nieudane wysłanie komendy do urządzenia {node_id} na endpoint {endpoint_id}: {e}", flush=True)
-                # Jak wywali błąd (urządzenie offline lub nieobsługiwane), czyścimy patch, by frontend i baza pozostały bez zmian (pokazując prawdę)
-                expected_patch.clear()
+                from chip.clusters import Objects as Clusters
+            except ImportError:
+                from matter_server.common.models import clusters as Clusters
 
-        updated_attrs = {}
-        if node is not None:
-            updated_attrs = self._attributes_from_node(node)
+            # Bezpieczne pobranie node_id chroniące przed błędem rzutowania None na int
+            raw_node_id = context.get("matter_node_id") or context.get("node_id")
+            if raw_node_id is None:
+                raise ValueError("Brak matter_node_id ani node_id w metadanych urządzenia.")
+            
+            node_id = int(raw_node_id)
+            endpoint_id = int(context.get("matter_endpoint_id") or context.get("endpoint") or 1)
+            normalized = action.lower().strip()
+            command = None
+            target_cluster_id = None
 
-        # ZWRACAMY TYLKO CZYSTE ATRYBUTY (bez "controller", "real_command", "node_id" itp.)
-        return {
-            **updated_attrs,
-            **expected_patch
-        }
+            # Przypisanie komend i identyfikatorów klastrów
+            if normalized in {"turn_on", "on"} and hasattr(Clusters.OnOff.Commands, "On"):
+                command = Clusters.OnOff.Commands.On()
+                target_cluster_id = 6
+            elif normalized in {"turn_off", "off"} and hasattr(Clusters.OnOff.Commands, "Off"):
+                command = Clusters.OnOff.Commands.Off()
+                target_cluster_id = 6
+            elif normalized == "toggle" and hasattr(Clusters.OnOff.Commands, "Toggle"):
+                command = Clusters.OnOff.Commands.Toggle()
+                target_cluster_id = 6
+            elif normalized == "set_level" and hasattr(Clusters.LevelControl.Commands, "MoveToLevelWithOnOff"):
+                level = max(0, min(100, int(payload.get("brightness", 0))))
+                command = Clusters.LevelControl.Commands.MoveToLevelWithOnOff(level=level * 254 // 100, transitionTime=0)
+                target_cluster_id = 8
+            elif normalized == "lock" and hasattr(Clusters.DoorLock.Commands, "LockDoor"):
+                command = Clusters.DoorLock.Commands.LockDoor()
+                target_cluster_id = 257
+            elif normalized == "unlock" and hasattr(Clusters.DoorLock.Commands, "UnlockDoor"):
+                command = Clusters.DoorLock.Commands.UnlockDoor()
+                target_cluster_id = 257
+
+            # Szybkie pobranie węzła z cache'u klienta Matter
+            node = None
+            try:
+                node = self._client.get_node(node_id)
+            except Exception:
+                for n in self._client.get_nodes():
+                    if getattr(n, "node_id", None) == node_id:
+                        node = n
+                        break
+
+            expected_patch = {}
+            if normalized in {"turn_on", "on"}:
+                expected_patch["on"] = True
+            elif normalized in {"turn_off", "off"}:
+                expected_patch["on"] = False
+            elif normalized == "toggle":
+                current_on = False
+                if node is not None:
+                    current_on = self._attributes_from_node(node).get("on", False)
+                expected_patch["on"] = not current_on
+            elif normalized == "set_level":
+                level = max(0, min(100, int(payload.get("brightness", 0))))
+                expected_patch["brightness"] = level
+                expected_patch["on"] = True if level > 0 else False
+            elif normalized == "lock":
+                expected_patch["locked"] = True
+            elif normalized == "unlock":
+                expected_patch["locked"] = False
+
+            # Inteligentne wyszukiwanie endpointu
+            if node is not None and target_cluster_id is not None:
+                for ep_id, ep in getattr(node, "endpoints", {}).items():
+                    if ep_id == 0:
+                        continue  
+                    if hasattr(ep, "get_cluster") and ep.get_cluster(target_cluster_id) is not None:
+                        endpoint_id = ep_id
+                        break
+
+            if command is not None:
+                try:
+                    await self._client.send_device_command(node_id, endpoint_id, command)
+                    await asyncio.sleep(0.02)
+                except Exception as e:
+                    print(f"[Command Error] Nieudane wysłanie komendy do urządzenia {node_id} na endpoint {endpoint_id}: {e}", flush=True)
+                    expected_patch.clear()
+
+            updated_attrs = {}
+            if node is not None:
+                updated_attrs = self._attributes_from_node(node)
+
+            return {
+                **updated_attrs,
+                **expected_patch
+            }
+
+        except Exception as e:
+            print(f"Matter Action Error: {e}", flush=True)
+            return {
+                "controller": "matter-server",
+                "real_command": False,
+                "error": str(e)
+            }
     
     # ... PONIŻEJ ZOSTAW METODY POMOCNICZE BEZ ZMIAN (np. _build_node, _primary_endpoint_id, _device_type_name) ...
    
@@ -1244,8 +1269,16 @@ class SimulatedMatterController:
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._fallback.invoke_command(device_type, action, payload, context)
-
+        # Zabezpieczenie przed pustym context lub brakiem node_id
+        if not context or not (context.get("matter_node_id") or context.get("node_id")):
+            return {
+                "last_action": action, 
+                "last_payload": payload, 
+                "controller": "matter-server", 
+                "real_command": False,
+                "error": "Brak node_id w metadanych (urządzenie prawdopodobnie nie jest w pełni sparowane)."
+            }
+        return asyncio.run_coroutine_threadsafe(self._invoke_command_async(device_type, action, payload, context), self._loop).result()
 
 def load_controller_with_status(repository: Any | None = None, app: Any | None = None) -> tuple[MatterController, str | None]:
     app_role = os.getenv("APP_ROLE", "").strip().lower()

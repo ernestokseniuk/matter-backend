@@ -344,6 +344,12 @@ def command_device(device_id: str):
         payload.get("payload") or {},
         context=device.metadata,
     )
+    
+    # DODANE ZABEZPIECZENIE: Jeżeli kontroler Matter zwrócił błąd komunikacji
+    if "error" in state_patch:
+        print(f"Command Error: {state_patch['error']}", flush=True)
+        return jsonify({"error": state_patch["error"]}), 400
+
     updated_device = _repository().update_device_state(device_id, state_patch)
     if updated_device is None:
         return jsonify({"error": "Device not found."}), 404
