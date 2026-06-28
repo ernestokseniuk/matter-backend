@@ -26,6 +26,9 @@ _sync_lock = Lock()
 _sync_thread = None
 
 def _run_background_sync(app_instance):
+    import datetime
+    from datetime import timezone
+    
     with app_instance.app_context():
         controller = current_app.extensions["matter_controller"]
         while True:
@@ -41,17 +44,34 @@ def _run_background_sync(app_instance):
                 for device in devices:
                     if device.status in {"connected", "paired"}:
                         try:
-                            # ODŁĄCZYŁEM Refresh! Czytamy tylko z pamięci (cache)
+                            # OCHRONA UI: Ignoruj aktualizacje ze wczesnego cache, 
+                            # jeśli baza była aktualizowana krócej niż 8 sekund temu.
+                            if device.updated_at:
+                                try:
+                                    updated_at_dt = datetime.datetime.fromisoformat(device.updated_at)
+                                    now_dt = datetime.datetime.now(timezone.utc)
+                                    if (now_dt - updated_at_dt).total_seconds() < 8:
+                                        continue # Pomiń to urządzenie, czekamy na sygnał real-time
+                                except ValueError:
+                                    pass
+                                    
                             node_id = int(device.metadata.get("matter_node_id", 0))
                             if hasattr(controller, "_client") and controller._client:
                                 node = controller._client.get_node(node_id)
                                 if node:
                                     # Pobranie stanu z lokalnej pamięci (cache)
                                     state_patch = map_raw_attributes(node.node_data.attributes)
-                                    if state_patch and state_patch != device.attributes:
-                                        repo.update_device_state(device.id, state_patch)
-                                        # Automatyzacje
-                                        check_and_run_automations(device.id, state_patch)
+                                    if state_patch:
+                                        different = False
+                                        for k, v in state_patch.items():
+                                            if device.attributes.get(k) != v:
+                                                different = True
+                                                break
+                                                
+                                        if different:
+                                            repo.update_device_state(device.id, state_patch)
+                                            # Automatyzacje
+                                            check_and_run_automations(device.id, state_patch)
                         except Exception as inner_e:
                             print(f"Error syncing device {device.id}: {inner_e}")
                             continue

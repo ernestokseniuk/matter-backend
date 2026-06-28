@@ -647,65 +647,70 @@ def map_single_attribute(attribute_path: str, val: Any) -> dict[str, Any]:
         return {}
         
     mapped = {}
+    
+    # Dodajemy sufiks dla endpointów innych niż 1, aby zapobiec nadpisywaniu 
+    # głównego stanu przez dodatkowe funkcje (np. drugi kanał przekaźnika)
+    suffix = "" if ep == 1 else f"_ep{ep}"
+
     # OnOff Cluster (6)
     if cl == 6:
         if attr == 0:
-            mapped["on"] = bool(val)
+            mapped[f"on{suffix}"] = bool(val)
             
     # LevelControl Cluster (8)
     elif cl == 8:
         if attr == 0:
             if val is not None:
-                mapped["brightness"] = round(int(val) * 100 / 254)
+                mapped[f"brightness{suffix}"] = round(int(val) * 100 / 254)
                 
     # DoorLock Cluster (257)
     elif cl == 257:
         if attr == 0:
-            mapped["locked"] = (int(val) == 1) if val is not None else True
+            mapped[f"locked{suffix}"] = (int(val) == 1) if val is not None else True
             
     # WindowCovering Cluster (258)
     elif cl == 258:
         if attr in (8, 23):
             if val is not None:
-                mapped["position"] = int(val)
-                mapped["open"] = int(val) > 0
+                mapped[f"position{suffix}"] = int(val)
+                mapped[f"open{suffix}"] = int(val) > 0
                 
     # Thermostat Cluster (513)
     elif cl == 513:
         if attr == 0:
             if val is not None:
-                mapped["temperature"] = round(int(val) / 100.0, 1)
+                mapped[f"temperature{suffix}"] = round(int(val) / 100.0, 1)
         elif attr in (18, 19):
             if val is not None:
-                mapped["target_temperature"] = round(int(val) / 100.0, 1)
+                mapped[f"target_temperature{suffix}"] = round(int(val) / 100.0, 1)
                 
     # Temperature Measurement (1026)
     elif cl == 1026:
         if attr == 0:
             if val is not None:
-                mapped["temperature"] = round(int(val) / 100.0, 1)
+                mapped[f"temperature{suffix}"] = round(int(val) / 100.0, 1)
                 
     # Relative Humidity Measurement (1029)
     elif cl == 1029:
         if attr == 0:
             if val is not None:
-                mapped["humidity"] = round(int(val) / 100.0, 1)
+                mapped[f"humidity{suffix}"] = round(int(val) / 100.0, 1)
                 
     # Occupancy Sensing (1030)
     elif cl == 1030:
         if attr == 0:
             if val is not None:
-                mapped["occupancy"] = bool(int(val) & 1)
+                mapped[f"occupancy{suffix}"] = bool(int(val) & 1)
                 
     # Boolean State (69)
     elif cl == 69:
         if attr == 0:
-            mapped["open"] = bool(val)
+            mapped[f"open{suffix}"] = bool(val)
             
     # Smoke CO Alarm (92)
     elif cl == 92:
         if attr == 0:
-            mapped["alarm"] = bool(val)
+            mapped[f"alarm{suffix}"] = bool(val)
             
     return mapped
 
@@ -755,14 +760,26 @@ class MatterServerControllerAdapter:
         
         # Intercept attributes / nodes events in real-time
         orig_signal_event = self._client._signal_event
+        
         def custom_signal_event(event: EventType, data: Any = None, node_id: int | None = None, attribute_path: str | None = None):
-            orig_signal_event(event, data, node_id, attribute_path)
-            # Log all received events to stderr/stdout for debug
-            print(f"[Real-time Event] event={event.name} node_id={node_id} path={attribute_path} data={data}", flush=True)
-            if event == EventType.ATTRIBUTE_UPDATED and node_id is not None:
-                self._handle_realtime_attribute_update(node_id, attribute_path, data)
-            elif event == EventType.NODE_UPDATED and node_id is not None:
-                self._handle_realtime_node_update(node_id, data)
+            # 1. NAJPIERW logujemy zdarzenie, zanim cokolwiek rzuci błąd!
+            event_name = getattr(event, 'name', str(event))
+            print(f"[Real-time Event] event={event_name} node_id={node_id} path={attribute_path} data={data}", flush=True)
+            
+            # 2. NAJPIERW wykonujemy naszą logikę i zapis do bazy danych
+            try:
+                if event == EventType.ATTRIBUTE_UPDATED and node_id is not None:
+                    self._handle_realtime_attribute_update(node_id, attribute_path, data)
+                elif event == EventType.NODE_UPDATED and node_id is not None:
+                    self._handle_realtime_node_update(node_id, data)
+            except Exception as e:
+                print(f"[Real-time] Błąd w naszej obsłudze zdarzenia: {e}", flush=True)
+
+            # 3. NA KONIEC wywołujemy kod biblioteki zabezpieczony przed awariami (np. typowania boolean).
+            try:
+                orig_signal_event(event, data, node_id, attribute_path)
+            except Exception as e:
+                print(f"[Real-time] Zignorowano wewn. błąd matter-server: {e}", flush=True)
                 
         self._client._signal_event = custom_signal_event
         
@@ -1092,6 +1109,19 @@ class MatterServerControllerAdapter:
                 try:
                     await self._client.send_device_command(node_id, endpoint_id, command)
                     await asyncio.sleep(0.02)
+                    
+                    # --- ROZWIĄZANIE PROBLEMU: RĘCZNA AKTUALIZACJA CACHE'U ---
+                    # Skoro urządzenie nie wysyła eventu, wymuszamy stan w pamięci RAM, 
+                    # żeby wątek synchronizujący w tle odczytał już poprawne dane.
+                    if node is not None and hasattr(node, "node_data") and hasattr(node.node_data, "attributes"):
+                        if target_cluster_id == 6:
+                            node.node_data.attributes[f"{endpoint_id}/6/0"] = expected_patch.get("on", False)
+                        elif target_cluster_id == 8:
+                            node.node_data.attributes[f"{endpoint_id}/8/0"] = int(expected_patch.get("brightness", 0) * 254 / 100)
+                        elif target_cluster_id == 257:
+                            node.node_data.attributes[f"{endpoint_id}/257/0"] = 1 if expected_patch.get("locked") else 2
+                    # ---------------------------------------------------------
+
                 except Exception as e:
                     print(f"[Command Error] Nieudane wysłanie komendy do urządzenia {node_id} na endpoint {endpoint_id}: {e}", flush=True)
                     expected_patch.clear()

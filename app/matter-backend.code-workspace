@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../../matter-devices"
+		},
+		{
+			"path": "../../matter-frontend"
 		}
 	],
 	"settings": {}
